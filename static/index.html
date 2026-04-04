@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClinicalTriage OpenEnv</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0a0f1e;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  header {
+    background: linear-gradient(135deg, #0f1f3d 0%, #1a1040 100%);
+    border-bottom: 1px solid #1e3a5f;
+    padding: 2rem 3rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .logo {
+    width: 52px; height: 52px;
+    background: linear-gradient(135deg, #e53e3e, #c53030);
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px;
+  }
+
+  header h1 { font-size: 1.6rem; font-weight: 700; color: #fff; }
+  header p  { font-size: 0.85rem; color: #90aecb; margin-top: 3px; }
+
+  .badge {
+    margin-left: auto;
+    background: #14532d;
+    color: #86efac;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid #166534;
+  }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 3rem 2rem; }
+
+  .hero {
+    text-align: center;
+    margin-bottom: 3rem;
+  }
+  .hero h2 {
+    font-size: 2.2rem;
+    font-weight: 800;
+    background: linear-gradient(90deg, #ef4444, #f97316, #ef4444);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 1rem;
+  }
+  .hero p {
+    color: #94a3b8;
+    font-size: 1.05rem;
+    max-width: 600px;
+    margin: 0 auto 0.5rem;
+    line-height: 1.7;
+  }
+  .disclaimer {
+    font-size: 0.78rem;
+    color: #64748b;
+    margin-top: 0.5rem;
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .stat {
+    background: #0f172a;
+    border: 1px solid #1e3a5f;
+    border-radius: 12px;
+    padding: 1.25rem;
+    text-align: center;
+  }
+  .stat-num { font-size: 2rem; font-weight: 800; color: #ef4444; }
+  .stat-label { font-size: 0.8rem; color: #64748b; margin-top: 4px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+
+  .card {
+    background: #0f172a;
+    border: 1px solid #1e3a5f;
+    border-radius: 16px;
+    padding: 1.5rem;
+  }
+  .card h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #93c5fd;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card h3 span { font-size: 1.1rem; }
+
+  .task-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid #1e293b;
+  }
+  .task-item:last-child { border-bottom: none; }
+
+  .diff {
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    min-width: 60px;
+    text-align: center;
+  }
+  .easy   { background: #14532d; color: #86efac; }
+  .medium { background: #713f12; color: #fde68a; }
+  .hard   { background: #4c0519; color: #fca5a5; }
+
+  .task-info { flex: 1; }
+  .task-name { font-size: 0.9rem; font-weight: 600; color: #e2e8f0; }
+  .task-desc { font-size: 0.78rem; color: #64748b; margin-top: 2px; }
+
+  .score-bar {
+    width: 80px;
+    height: 6px;
+    background: #1e293b;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .score-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #ef4444, #f97316); }
+
+  .action-list { list-style: none; }
+  .action-list li {
+    padding: 8px 0;
+    border-bottom: 1px solid #1e293b;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #cbd5e1;
+  }
+  .action-list li:last-child { border-bottom: none; }
+  .action-tag {
+    font-family: monospace;
+    background: #1e293b;
+    color: #93c5fd;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    min-width: 110px;
+  }
+
+  .demo-section { margin-bottom: 2rem; }
+  .demo-section h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #93c5fd;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .demo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+
+  .demo-card {
+    background: #0f172a;
+    border: 1px solid #1e3a5f;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .demo-header {
+    background: #1e293b;
+    padding: 10px 14px;
+    font-size: 0.78rem;
+    color: #64748b;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-green  { background: #22c55e; }
+  .dot-yellow { background: #eab308; }
+  .dot-red    { background: #ef4444; }
+
+  pre {
+    padding: 14px;
+    font-size: 0.76rem;
+    line-height: 1.7;
+    color: #94a3b8;
+    overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+  .kw  { color: #f472b6; }
+  .str { color: #86efac; }
+  .num { color: #fb923c; }
+  .key { color: #93c5fd; }
+
+  .reward-table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+  .reward-table th {
+    text-align: left;
+    padding: 8px 12px;
+    color: #64748b;
+    font-weight: 600;
+    border-bottom: 1px solid #1e293b;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+  }
+  .reward-table td { padding: 10px 12px; border-bottom: 1px solid #0f172a; color: #cbd5e1; }
+  .reward-table tr:hover td { background: #1e293b; }
+  .pos { color: #4ade80; font-weight: 700; }
+  .neg { color: #f87171; font-weight: 700; }
+
+  .api-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 2.5rem; }
+  .api-card {
+    background: #0f172a;
+    border: 1px solid #1e3a5f;
+    border-radius: 10px;
+    padding: 1rem;
+  }
+  .method {
+    font-size: 0.7rem;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    display: inline-block;
+  }
+  .get  { background: #1e3a5f; color: #60a5fa; }
+  .post { background: #14532d; color: #86efac; }
+  .endpoint { font-family: monospace; font-size: 0.85rem; color: #e2e8f0; margin: 4px 0; }
+  .api-desc { font-size: 0.75rem; color: #64748b; }
+
+  .try-btn {
+    display: inline-block;
+    margin-top: 1.5rem;
+    background: linear-gradient(135deg, #dc2626, #b91c1c);
+    color: white;
+    padding: 12px 28px;
+    border-radius: 10px;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.9rem;
+    transition: opacity 0.2s;
+  }
+  .try-btn:hover { opacity: 0.85; }
+
+  footer {
+    text-align: center;
+    padding: 2rem;
+    color: #334155;
+    font-size: 0.8rem;
+    border-top: 1px solid #1e293b;
+  }
+
+  @media (max-width: 700px) {
+    .stats { grid-template-columns: repeat(2,1fr); }
+    .grid2 { grid-template-columns: 1fr; }
+    .demo-grid { grid-template-columns: 1fr; }
+    .api-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🏥</div>
+  <div>
+    <h1>ClinicalTriage OpenEnv</h1>
+    <p>Emergency Room Triage Simulation · Built for Meta × HF OpenEnv Hackathon</p>
+  </div>
+  <div class="badge">● LIVE</div>
+</header>
+
+<main>
+
+  <div class="hero">
+    <h2>AI Triage Nurse Environment</h2>
+    <p>An RL environment where an AI agent learns to prioritize patients in a simulated emergency room — classifying severity, allocating scarce resources, and avoiding life-threatening mistakes.</p>
+    <p class="disclaimer">⚠️ Synthetic simulation only. All patient data is procedurally generated. Not for real medical use.</p>
+    <a href="/docs" class="try-btn">Try the API →</a>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-num">3</div><div class="stat-label">Tasks (easy→hard)</div></div>
+    <div class="stat"><div class="stat-num">12</div><div class="stat-label">Max patients/episode</div></div>
+    <div class="stat"><div class="stat-num">4×4</div><div class="stat-label">Action space</div></div>
+    <div class="stat"><div class="stat-num">0.81</div><div class="stat-label">Baseline score (easy)</div></div>
+  </div>
+
+  <div class="grid2">
+
+    <div class="card">
+      <h3><span>📋</span> Tasks</h3>
+      <div class="task-item">
+        <span class="diff easy">EASY</span>
+        <div class="task-info">
+          <div class="task-name">Single Patient Triage</div>
+          <div class="task-desc">4 patients · clear symptoms · 5 ICU beds</div>
+        </div>
+        <div><div class="score-bar"><div class="score-fill" style="width:81%"></div></div></div>
+      </div>
+      <div class="task-item">
+        <span class="diff medium">MEDIUM</span>
+        <div class="task-info">
+          <div class="task-name">Mixed Severity ER</div>
+          <div class="task-desc">8 patients · mixed severity · 3 ICU beds</div>
+        </div>
+        <div><div class="score-bar"><div class="score-fill" style="width:65%"></div></div></div>
+      </div>
+      <div class="task-item">
+        <span class="diff hard">HARD</span>
+        <div class="task-info">
+          <div class="task-name">Mass Casualty Event</div>
+          <div class="task-desc">12 patients · subtle symptoms · 1 ICU bed · 1 doctor</div>
+        </div>
+        <div><div class="score-bar"><div class="score-fill" style="width:55%"></div></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span>⚡</span> Action Space</h3>
+      <ul class="action-list">
+        <li><span class="action-tag">IMMEDIATE</span> Life-threatening — act right now</li>
+        <li><span class="action-tag">URGENT</span> Serious — within 30 minutes</li>
+        <li><span class="action-tag">STANDARD</span> Stable — within 2 hours</li>
+        <li><span class="action-tag">LOW</span> Minor — can wait</li>
+        <li><span class="action-tag">ICU</span> Intensive care unit</li>
+        <li><span class="action-tag">GENERAL</span> General ward admission</li>
+        <li><span class="action-tag">OBSERVATION</span> Monitor and reassess</li>
+        <li><span class="action-tag">DISCHARGE</span> Safe to send home</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <div class="demo-section">
+    <h3><span>💻</span> Live Example</h3>
+    <div class="demo-grid">
+
+      <div class="demo-card">
+        <div class="demo-header">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-yellow"></div>
+          <div class="dot dot-green"></div>
+          POST /reset
+        </div>
+        <pre><span class="kw">Request:</span>
+{ <span class="key">"difficulty"</span>: <span class="str">"medium"</span> }
+
+<span class="kw">Response:</span>
+{
+  <span class="key">"patient"</span>: {
+    <span class="key">"patient_id"</span>: <span class="str">"P003"</span>,
+    <span class="key">"age"</span>: <span class="num">72</span>,
+    <span class="key">"symptoms"</span>: [<span class="str">"chest_pain"</span>],
+    <span class="key">"oxygen_saturation"</span>: <span class="num">88</span>,
+    <span class="key">"heart_rate"</span>: <span class="num">142</span>,
+    <span class="key">"blood_pressure"</span>: <span class="str">"low"</span>,
+    <span class="key">"pain_level"</span>: <span class="num">8</span>,
+    <span class="key">"risk_factors"</span>: [<span class="str">"cardiac_history"</span>]
+  },
+  <span class="key">"hospital"</span>: { <span class="key">"icu_beds"</span>: <span class="num">3</span>, <span class="key">"doctors"</span>: <span class="num">2</span> },
+  <span class="key">"queue_length"</span>: <span class="num">8</span>
+}</pre>
+      </div>
+
+      <div class="demo-card">
+        <div class="demo-header">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-yellow"></div>
+          <div class="dot dot-green"></div>
+          POST /step
+        </div>
+        <pre><span class="kw">Request:</span>
+{
+  <span class="key">"triage_level"</span>: <span class="str">"IMMEDIATE"</span>,
+  <span class="key">"disposition"</span>: <span class="str">"ICU"</span>
+}
+
+<span class="kw">Response:</span>
+{
+  <span class="key">"reward"</span>: {
+    <span class="key">"score"</span>: <span class="num">1.0</span>,
+    <span class="key">"reason"</span>: <span class="str">"Triage: IMMEDIATE
+    (correct=IMMEDIATE, diff=0)
+    | Disposition: ICU
+    (correct=ICU)"</span>
+  },
+  <span class="key">"done"</span>: <span class="kw">false</span>
+}</pre>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:2rem">
+    <h3><span>🎯</span> Reward Function</h3>
+    <table class="reward-table">
+      <thead>
+        <tr><th>Situation</th><th>Score</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Exact triage level match</td><td class="pos">+0.50</td><td>Correct severity classification</td></tr>
+        <tr><td>Off by one level</td><td class="pos">+0.25</td><td>Partial credit for close decision</td></tr>
+        <tr><td>Correct disposition</td><td class="pos">+0.30</td><td>Right ward assignment</td></tr>
+        <tr><td>Critical patient seen fast</td><td class="pos">+0.10</td><td>Time-sensitive bonus</td></tr>
+        <tr><td>IMMEDIATE classified as LOW</td><td class="neg">−0.50</td><td>Safety-critical miss — most severe penalty</td></tr>
+        <tr><td>URGENT classified as LOW</td><td class="neg">−0.25</td><td>Dangerous under-triage</td></tr>
+        <tr><td>ICU used when no beds left</td><td class="neg">−0.15</td><td>Resource misallocation</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="api-grid">
+    <div class="api-card">
+      <span class="method get">GET</span>
+      <div class="endpoint">/</div>
+      <div class="api-desc">Health check — returns status ok</div>
+    </div>
+    <div class="api-card">
+      <span class="method post">POST</span>
+      <div class="endpoint">/reset</div>
+      <div class="api-desc">Start new episode, returns first patient</div>
+    </div>
+    <div class="api-card">
+      <span class="method post">POST</span>
+      <div class="endpoint">/step</div>
+      <div class="api-desc">Submit triage decision, get reward</div>
+    </div>
+    <div class="api-card">
+      <span class="method get">GET</span>
+      <div class="endpoint">/state</div>
+      <div class="api-desc">Current environment state</div>
+    </div>
+    <div class="api-card">
+      <span class="method get">GET</span>
+      <div class="endpoint">/tasks</div>
+      <div class="api-desc">List all 3 tasks with descriptions</div>
+    </div>
+    <div class="api-card">
+      <span class="method post">POST</span>
+      <div class="endpoint">/grade/{task_id}</div>
+      <div class="api-desc">Run grader, returns score 0.0–1.0</div>
+    </div>
+  </div>
+
+  <div style="text-align:center">
+    <a href="/docs" class="try-btn">Open Interactive API Docs →</a>
+  </div>
+
+</main>
+
+<footer>
+  ClinicalTriage OpenEnv · VisionVerse · Meta × PyTorch × Hugging Face OpenEnv Hackathon 2025
+</footer>
+
+</body>
+</html>

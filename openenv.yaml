@@ -1,0 +1,105 @@
+name: clinical-triage-env
+version: "2.0.0"
+team: VisionVerse
+description: >
+  ClinicalTriage OpenEnv — Emergency room triage simulation where an RL agent
+  acts as a triage nurse. Classifies patient severity and allocates hospital
+  resources under realistic constraints.
+  Built by VisionVerse for Meta x PyTorch x Hugging Face OpenEnv Hackathon.
+  Synthetic data only. Not for real medical use.
+
+tags:
+  - openenv
+  - clinical
+  - triage
+  - healthcare
+  - emergency-room
+  - synthetic-simulation
+
+disclaimer: >
+  This is a synthetic simulation for AI research purposes only.
+  All patient data is procedurally generated. Not intended for real
+  medical diagnosis, triage, or treatment decisions.
+
+tasks:
+  - id: task_easy
+    name: Single Patient Triage
+    difficulty: easy
+    patients: 4
+    icu_beds: 5
+    doctors: 4
+    description: 4 patients with clear symptoms and ample resources
+
+  - id: task_medium
+    name: Mixed Severity ER
+    difficulty: medium
+    patients: 8
+    icu_beds: 3
+    doctors: 2
+    description: 8 patients, mixed severities, moderate resource constraints
+
+  - id: task_hard
+    name: Mass Casualty Event
+    difficulty: hard
+    patients: 12
+    icu_beds: 1
+    doctors: 1
+    description: 12 patients, subtle symptoms, extreme resource scarcity
+
+action_space:
+  triage_level:
+    type: enum
+    values: [IMMEDIATE, URGENT, STANDARD, LOW]
+    description: Severity classification for the patient
+  disposition:
+    type: enum
+    values: [ICU, GENERAL, OBSERVATION, DISCHARGE]
+    description: Ward or resource assignment for the patient
+
+observation_space:
+  patient:
+    patient_id: string
+    age: int (0-120)
+    symptoms: list[string]
+    oxygen_saturation: int (0-100 percent)
+    heart_rate: int (0-300 bpm)
+    blood_pressure: string (very_low|low|normal|high)
+    temperature: float (Celsius)
+    pain_level: int (0-10)
+    risk_factors: list[string]
+    waiting_time_min: int
+  hospital:
+    icu_beds: int
+    general_beds: int
+    doctors: int
+    nurses: int
+  queue_length: int
+  step_num: int
+  total_patients: int
+  patients_handled: int
+  episode_done: bool
+
+reward_structure:
+  per_step: true
+  components:
+    triage_level_exact: +0.50
+    triage_level_off_by_one: +0.25
+    triage_level_off_by_two_plus: 0.0
+    disposition_correct: +0.30
+    disposition_partial: +0.10 to +0.15
+    disposition_unsafe_discharge: 0.0
+    safety_penalty_immediate_to_standard_low: -0.50
+    safety_penalty_immediate_to_urgent: -0.10
+    safety_penalty_urgent_to_low: -0.25
+    resource_penalty_icu_no_beds: -0.15
+    resource_penalty_general_no_beds: -0.10
+    time_bonus_critical_fast: +0.10
+  normalised_range: [0.0, 1.0]
+
+endpoints:
+  health: GET /health
+  reset:  POST /reset
+  step:   POST /step
+  state:  GET /state
+  tasks:  GET /tasks
+  grade:  POST /grade/{task_id}
