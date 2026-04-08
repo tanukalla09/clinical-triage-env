@@ -1,39 +1,36 @@
 """
 inference.py — Baseline inference for ClinicalTriage OpenEnv
-Built by VisionVerse
+Built by VisionVerse for Meta x PyTorch x Hugging Face OpenEnv Hackathon 2026
 
-MANDATORY structured stdout logging: [START], [STEP], [END] format.
-Deviation from this format will cause incorrect evaluation scoring.
+MANDATORY stdout format (exactly as required):
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 
-Usage (Windows):
-    set API_BASE_URL=https://api.openai.com/v1
-    set MODEL_NAME=gpt-4o-mini
-    set HF_TOKEN=your_hf_token_here
-    python inference.py
-
-Usage (Mac/Linux):
-    export API_BASE_URL=https://api.openai.com/v1
-    export MODEL_NAME=gpt-4o-mini
-    export HF_TOKEN=your_hf_token_here
-    python inference.py
+Environment variables:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key. (no default — must be set)
 
 Synthetic simulation only. Not for real medical use.
 """
 
 import os
-import json
-import time
+from typing import Optional
 from openai import OpenAI
 from environment import ClinicalTriageEnvironment, Action
 
-# ── Credentials from environment variables (NEVER hardcode these) ─────────────
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME",   "gpt-4o-mini")
-HF_TOKEN     = os.environ.get("HF_TOKEN",     "")   # ← NEVER put your token here
+# ── Credentials — defaults only for API_BASE_URL and MODEL_NAME, NOT HF_TOKEN ─
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")   # ← NO default, must be set externally
 
-# HF_TOKEN is used as the API key because on Hugging Face Spaces,
-# the LLM endpoint accepts your HF token as authentication.
-client = OpenAI(api_key=HF_TOKEN, base_url=API_BASE_URL)
+API_KEY = HF_TOKEN or os.getenv("API_KEY", "")
+
+client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+
+BENCHMARK  = "clinical-triage"
+MAX_STEPS  = 20
 
 SYSTEM_PROMPT = """You are an AI triage nurse in a simulated emergency room (synthetic data only).
 
@@ -56,44 +53,30 @@ TRIAGE_LEVEL: <level>
 DISPOSITION: <disposition>"""
 
 
-def _obs_to_dict(obs) -> dict:
-    """Safely convert observation to dict whether it's a Pydantic model or already a dict."""
-    if isinstance(obs, dict):
-        return obs
-    if hasattr(obs, "model_dump"):
-        return obs.model_dump()
-    if hasattr(obs, "dict"):
-        return obs.dict()
-    return {}
+# ── Mandatory log functions — exact format required by hackathon ──────────────
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def _safe_score(reward) -> float:
-    """Safely extract score from reward whether it's a Pydantic model or float."""
-    if isinstance(reward, (int, float)):
-        return float(reward)
-    if hasattr(reward, "score"):
-        return float(reward.score)
-    return 0.0
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    done_str  = "true" if done else "false"
+    error_str = error if error else "null"
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_str} error={error_str}", flush=True)
 
 
-def _safe_reason(reward) -> str:
-    """Safely extract reason string from reward."""
-    if hasattr(reward, "reason"):
-        return str(reward.reason)
-    return ""
+def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
+    success_str  = "true" if success else "false"
+    rewards_str  = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={success_str} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 
-def _safe_breakdown(reward) -> dict:
-    """Safely extract breakdown dict from reward."""
-    if hasattr(reward, "breakdown"):
-        return reward.breakdown or {}
-    return {}
+# ── Agent ─────────────────────────────────────────────────────────────────────
 
-
-def agent_act(obs: dict) -> Action:
-    """Call LLM and parse triage decision."""
-    patient  = obs.get("patient", {})
-    hospital = obs.get("hospital", {})
+def agent_act(obs: dict) -> tuple:
+    """Call LLM and parse triage decision. Returns (Action, action_str, error_str)."""
+    patient  = obs.get("patient", {}) if isinstance(obs, dict) else {}
+    hospital = obs.get("hospital", {}) if isinstance(obs, dict) else {}
 
     user_msg = f"""Synthetic patient vitals:
 - Age: {patient.get('age', '?')}
@@ -113,6 +96,10 @@ Hospital resources:
 
 Your decision:"""
 
+    error_str    = None
+    triage_level = "STANDARD"
+    disposition  = "OBSERVATION"
+
     try:
         resp = client.chat.completions.create(
             model=MODEL_NAME,
@@ -126,9 +113,6 @@ Your decision:"""
         raw   = resp.choices[0].message.content.strip().upper()
         lines = raw.split("\n")
 
-        triage_level = "STANDARD"
-        disposition  = "OBSERVATION"
-
         for line in lines:
             if "TRIAGE_LEVEL:" in line:
                 val = line.split(":", 1)[1].strip()
@@ -139,83 +123,99 @@ Your decision:"""
                 if val in ("ICU", "GENERAL", "OBSERVATION", "DISCHARGE"):
                     disposition = val
 
-        return Action(triage_level=triage_level, disposition=disposition)
+    except Exception as e:
+        error_str = str(e)[:100]
+
+    action     = Action(triage_level=triage_level, disposition=disposition)
+    action_str = f"triage={triage_level},disposition={disposition}"
+    return action, action_str, error_str
+
+
+# ── Task runner ───────────────────────────────────────────────────────────────
+
+def run_task(task_id: str, difficulty: str) -> float:
+    """
+    Run one episode for the given task.
+    Emits mandatory [START], [STEP], [END] logs.
+    Returns normalized score for this episode.
+    """
+    env      = ClinicalTriageEnvironment()
+    obs      = env.reset(difficulty=difficulty)
+    obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else (obs.dict() if hasattr(obs, "dict") else obs)
+
+    step_rewards = []
+    steps        = 0
+    done         = False
+    info         = {}
+    last_error   = None
+
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        while not done and steps < MAX_STEPS:
+            action, action_str, error_str = agent_act(obs_dict)
+            last_error = error_str
+
+            obs, reward, done, info = env.step(action)
+            obs_dict = obs.model_dump() if hasattr(obs, "model_dump") else (obs.dict() if hasattr(obs, "dict") else obs)
+
+            # safely extract reward score
+            if hasattr(reward, "score"):
+                r = float(reward.score)
+            elif isinstance(reward, (int, float)):
+                r = float(reward)
+            else:
+                r = 0.0
+
+            steps += 1
+            step_rewards.append(r)
+
+            log_step(
+                step=steps,
+                action=action_str,
+                reward=r,
+                done=bool(done),
+                error=error_str,
+            )
 
     except Exception as e:
-        # ── [LLM_ERROR] log ────────────────────────────────────────────────────
-        print(json.dumps({"type": "LLM_ERROR", "error": str(e)}), flush=True)
-        return Action(triage_level="STANDARD", disposition="OBSERVATION")
+        last_error = str(e)[:100]
+        if not step_rewards:
+            step_rewards = [0.0]
+        log_step(step=steps + 1, action="error", reward=0.0, done=True, error=last_error)
+
+    # normalize score to 0.0–1.0
+    score   = round(sum(step_rewards) / max(len(step_rewards), 1), 2)
+    success = score >= 0.5
+
+    log_end(success=success, steps=steps, score=score, rewards=step_rewards)
+    return score
 
 
-def run_task(task_id: str, difficulty: str, task_name: str, episodes: int = 5) -> float:
-    """
-    Run task and emit MANDATORY structured logs.
-    Format: [START], [STEP], [END] — required by evaluation system.
-    ANY deviation will cause incorrect evaluation scoring.
-    """
-    env = ClinicalTriageEnvironment()   # fresh instance per task — no shared state
-    ep_scores = []
-
-    for ep in range(1, episodes + 1):
-        obs      = env.reset(difficulty=difficulty)
-        obs_dict = _obs_to_dict(obs)
-        ep_score = 0.0
-        steps    = 0
-        done     = False
-        info     = {}
-
-        # ── [START] MANDATORY LOG FORMAT ──────────────────────────────────────
-        print(f'[START] {json.dumps({"task_id": task_id, "episode": ep, "difficulty": difficulty, "model": MODEL_NAME, "total_patients": obs_dict.get("total_patients", 0)})}', flush=True)
-
-        while not done:
-            action          = agent_act(obs_dict)
-            obs, reward, done, info = env.step(action)
-            obs_dict        = _obs_to_dict(obs)
-            score           = _safe_score(reward)
-            ep_score       += score
-            steps          += 1
-
-            # ── [STEP] MANDATORY LOG FORMAT ────────────────────────────────────
-            print(f'[STEP] {json.dumps({"task_id": task_id, "episode": ep, "step": steps, "triage_level": action.triage_level, "disposition": action.disposition, "true_level": info.get("true_triage_level", ""), "true_disp": info.get("true_disposition", ""), "score": score, "reason": _safe_reason(reward), "breakdown": _safe_breakdown(reward)})}', flush=True)
-
-        normalised = round(ep_score / max(steps, 1), 3)
-        ep_scores.append(normalised)
-
-        # ── [END] MANDATORY LOG FORMAT ─────────────────────────────────────────
-        print(f'[END] {json.dumps({"task_id": task_id, "episode": ep, "steps": steps, "episode_score": normalised, "cumulative_score": info.get("cumulative_score", 0)})}', flush=True)
-
-    avg = round(sum(ep_scores) / len(ep_scores), 3)
-    return avg
-
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    start_time = time.time()
-
-    # Run start summary
-    print(f'[RUN_START] {json.dumps({"env": "clinical-triage", "team": "VisionVerse", "model": MODEL_NAME, "api_url": API_BASE_URL, "note": "Synthetic simulation only. Not for real medical use."})}', flush=True)
-
     tasks = [
-        ("task_easy",   "easy",   "Single Patient Triage"),
-        ("task_medium", "medium", "Mixed Severity ER"),
-        ("task_hard",   "hard",   "Mass Casualty Event"),
+        ("task_easy",   "easy"),
+        ("task_medium", "medium"),
+        ("task_hard",   "hard"),
     ]
 
     results = {}
-    for task_id, difficulty, task_name in tasks:
-        avg = run_task(task_id, difficulty, task_name, episodes=5)
-        results[task_id] = avg
+    for task_id, difficulty in tasks:
+        score = run_task(task_id, difficulty)
+        results[task_id] = score
 
-    overall = round(sum(results.values()) / len(results), 3)
-    elapsed = round(time.time() - start_time, 1)
-
-    # Run end summary
-    print(f'[RUN_END] {json.dumps({"task_scores": results, "overall": overall, "elapsed_sec": elapsed, "model": MODEL_NAME})}', flush=True)
-
-    # Save scores to file
+    # Save scores
+    import json
     with open("baseline_scores.json", "w") as f:
-        json.dump({"tasks": results, "overall": overall, "model": MODEL_NAME}, f, indent=2)
+        json.dump({
+            "tasks":   results,
+            "overall": round(sum(results.values()) / len(results), 2),
+            "model":   MODEL_NAME,
+        }, f, indent=2)
 
-    print(f'[SAVED] {json.dumps({"file": "baseline_scores.json"})}', flush=True)
+    print(f"[SAVED] baseline_scores.json — overall={round(sum(results.values())/len(results),2)}", flush=True)
 
 
 if __name__ == "__main__":
