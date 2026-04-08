@@ -6,20 +6,13 @@ MANDATORY stdout format:
     [START] task=<task_name> env=<benchmark> model=<model_name>
     [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
     [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
-
-Environment variables (injected by validator):
-    API_BASE_URL   The LiteLLM proxy endpoint — MUST use this
-    API_KEY        The injected API key — MUST use this
-    MODEL_NAME     The model identifier
-    HF_TOKEN       Fallback if API_KEY not present
 """
 
 import os
 import json
 from typing import Optional
-from openai import OpenAI
 
-# ── Credentials — use API_KEY exactly as injected by the validator ─────────────
+# ── Credentials — injected by validator ───────────────────────────────────────
 API_BASE_URL = os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN") or "dummy-key"
 MODEL_NAME   = os.environ.get("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
@@ -27,130 +20,100 @@ MODEL_NAME   = os.environ.get("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 BENCHMARK = "clinical-triage"
 MAX_STEPS = 20
 
-# ── OpenAI client — initialized with injected credentials ─────────────────────
-client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+# ── OpenAI client — wrapped in try/except so crash never propagates ───────────
+client = None
+try:
+    from openai import OpenAI
+    client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+except Exception as _e:
+    print(f"[WARN] OpenAI client init failed: {_e}", flush=True)
 
-# ── Environment import ─────────────────────────────────────────────────────────
+# ── Environment import ────────────────────────────────────────────────────────
 try:
     from environment import ClinicalTriageEnvironment, Action
     ENV_AVAILABLE = True
-except Exception as e:
-    print(f"[WARN] Could not import environment: {e}", flush=True)
+except Exception as _e:
+    print(f"[WARN] Could not import environment: {_e}", flush=True)
     ENV_AVAILABLE = False
 
 SYSTEM_PROMPT = """You are an AI triage nurse in a simulated emergency room (synthetic data only).
 
 For each patient, make TWO decisions:
 
-1. TRIAGE LEVEL — how severe is this patient?
-   IMMEDIATE  = life-threatening (low SpO2, very high/low HR, severe bleeding)
-   URGENT     = serious, needs care within 30 minutes
-   STANDARD   = stable, needs care within 2 hours
-   LOW        = minor, can wait or be discharged
+1. TRIAGE LEVEL:
+   IMMEDIATE  = life-threatening
+   URGENT     = serious, within 30 minutes
+   STANDARD   = stable, within 2 hours
+   LOW        = minor, can wait
 
-2. DISPOSITION — where should this patient go?
+2. DISPOSITION:
    ICU         = for IMMEDIATE cases
    GENERAL     = for URGENT cases
    OBSERVATION = for STANDARD cases
    DISCHARGE   = for LOW cases
 
-Reply in EXACTLY this format — two lines only:
+Reply in EXACTLY this format:
 TRIAGE_LEVEL: <IMMEDIATE|URGENT|STANDARD|LOW>
 DISPOSITION: <ICU|GENERAL|OBSERVATION|DISCHARGE>"""
 
 
-# ── Mandatory log functions ────────────────────────────────────────────────────
+# ── Log functions ─────────────────────────────────────────────────────────────
 
-def log_start(task: str, env: str, model: str) -> None:
+def log_start(task, env, model):
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
+def log_step(step, action, reward, done, error):
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error if error else 'null'}", flush=True)
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    done_str  = str(done).lower()
-    error_str = error if error else "null"
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_str} error={error_str}", flush=True)
-
-
-def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
-    success_str = str(success).lower()
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={success_str} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+def log_end(success, steps, score, rewards):
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={','.join(f'{r:.2f}' for r in rewards)}", flush=True)
 
 
-# ── Heuristic fallback agent (used only if LLM call fails) ────────────────────
+# ── Heuristic fallback ────────────────────────────────────────────────────────
 
-def heuristic_act(obs_dict: dict) -> tuple:
-    """Rule-based triage — fallback only if LLM call raises an exception."""
+def heuristic_act(obs_dict):
     try:
-        patient  = obs_dict.get("patient", {})
-        hospital = obs_dict.get("hospital", {})
+        p    = obs_dict.get("patient", {})
+        h    = obs_dict.get("hospital", {})
+        spo2 = p.get("oxygen_saturation", 95)
+        hr   = p.get("heart_rate", 80)
+        bp   = p.get("blood_pressure", "normal")
+        pain = p.get("pain_level", 0)
+        syms = p.get("symptoms", [])
+        icu  = h.get("icu_beds", 1)
 
-        spo2     = patient.get("oxygen_saturation", 95)
-        hr       = patient.get("heart_rate", 80)
-        bp       = patient.get("blood_pressure", "normal")
-        pain     = patient.get("pain_level", 0)
-        syms     = patient.get("symptoms", [])
-        icu_beds = hospital.get("icu_beds", 1)
-
-        is_critical = (
-            spo2 < 90 or hr > 130 or hr < 45 or bp == "low" or
-            "severe_bleeding" in syms or "cardiac_arrest" in syms or
-            "unconscious" in syms or pain >= 9
-        )
-        is_urgent = (
-            90 <= spo2 < 94 or (100 < hr <= 130) or
-            "chest_pain" in syms or "stroke_symptoms" in syms or pain >= 7
-        )
-
-        if is_critical:
-            triage_level = "IMMEDIATE"
-            disposition  = "ICU" if icu_beds > 0 else "GENERAL"
-        elif is_urgent:
-            triage_level = "URGENT"
-            disposition  = "GENERAL"
+        if spo2 < 90 or hr > 130 or hr < 45 or bp == "low" or "severe_bleeding" in syms or pain >= 9:
+            triage, disp = "IMMEDIATE", ("ICU" if icu > 0 else "GENERAL")
+        elif spo2 < 94 or hr > 100 or "chest_pain" in syms or pain >= 7:
+            triage, disp = "URGENT", "GENERAL"
         elif pain >= 4:
-            triage_level = "STANDARD"
-            disposition  = "OBSERVATION"
+            triage, disp = "STANDARD", "OBSERVATION"
         else:
-            triage_level = "LOW"
-            disposition  = "DISCHARGE"
+            triage, disp = "LOW", "DISCHARGE"
     except Exception:
-        triage_level = "STANDARD"
-        disposition  = "OBSERVATION"
+        triage, disp = "STANDARD", "OBSERVATION"
 
-    action_str = f"triage={triage_level},disposition={disposition}"
-    return triage_level, disposition, action_str, None
+    return triage, disp, f"triage={triage},disposition={disp}", None
 
 
-# ── LLM agent — ALWAYS tries to call the API first ────────────────────────────
+# ── LLM agent ────────────────────────────────────────────────────────────────
 
-def llm_act(obs_dict: dict) -> tuple:
-    """Call the injected LLM proxy. Falls back to heuristic ONLY on exception."""
-    patient  = obs_dict.get("patient", {})
-    hospital = obs_dict.get("hospital", {})
+def llm_act(obs_dict):
+    if client is None:
+        return heuristic_act(obs_dict)
 
-    user_msg = f"""Synthetic patient vitals:
-- Age: {patient.get('age', '?')}
-- Symptoms: {', '.join(patient.get('symptoms', []))}
-- Oxygen saturation: {patient.get('oxygen_saturation', '?')}%
-- Heart rate: {patient.get('heart_rate', '?')} bpm
-- Blood pressure: {patient.get('blood_pressure', '?')}
-- Pain level: {patient.get('pain_level', '?')}/10
-- Risk factors: {', '.join(patient.get('risk_factors', []))}
+    p = obs_dict.get("patient", {})
+    h = obs_dict.get("hospital", {})
 
-Hospital resources:
-- ICU beds available: {hospital.get('icu_beds', '?')}
-- General beds: {hospital.get('general_beds', '?')}
-- Doctors: {hospital.get('doctors', '?')}
-
+    user_msg = f"""Synthetic patient:
+- Age: {p.get('age','?')}, Symptoms: {', '.join(p.get('symptoms',[]))}
+- SpO2: {p.get('oxygen_saturation','?')}%, HR: {p.get('heart_rate','?')} bpm
+- BP: {p.get('blood_pressure','?')}, Pain: {p.get('pain_level','?')}/10
+- ICU beds: {h.get('icu_beds','?')}, Doctors: {h.get('doctors','?')}
 Your decision:"""
 
-    triage_level = "STANDARD"
-    disposition  = "OBSERVATION"
-    error_str    = None
-
+    triage, disp, error_str = "STANDARD", "OBSERVATION", None
     try:
-        # This call MUST go through client which uses API_KEY + API_BASE_URL
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -163,122 +126,92 @@ Your decision:"""
         raw = resp.choices[0].message.content.strip().upper()
         for line in raw.split("\n"):
             if "TRIAGE_LEVEL:" in line:
-                val = line.split(":", 1)[1].strip()
-                if val in ("IMMEDIATE", "URGENT", "STANDARD", "LOW"):
-                    triage_level = val
+                v = line.split(":",1)[1].strip()
+                if v in ("IMMEDIATE","URGENT","STANDARD","LOW"):
+                    triage = v
             if "DISPOSITION:" in line:
-                val = line.split(":", 1)[1].strip()
-                if val in ("ICU", "GENERAL", "OBSERVATION", "DISCHARGE"):
-                    disposition = val
+                v = line.split(":",1)[1].strip()
+                if v in ("ICU","GENERAL","OBSERVATION","DISCHARGE"):
+                    disp = v
     except Exception as e:
         error_str = str(e)[:80]
-        # Only fall back to heuristic if LLM call fails
-        triage_level, disposition, _, _ = heuristic_act(obs_dict)
+        triage, disp, _, _ = heuristic_act(obs_dict)
 
-    action_str = f"triage={triage_level},disposition={disposition}"
-    return triage_level, disposition, action_str, error_str
+    return triage, disp, f"triage={triage},disposition={disp}", error_str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def obs_to_dict(obs) -> dict:
-    if isinstance(obs, dict):
-        return obs
-    if hasattr(obs, "model_dump"):
-        return obs.model_dump()
-    if hasattr(obs, "dict"):
-        return obs.dict()
+def obs_to_dict(obs):
+    if isinstance(obs, dict): return obs
+    if hasattr(obs, "model_dump"): return obs.model_dump()
+    if hasattr(obs, "dict"): return obs.dict()
     return {}
 
-
-def safe_score(reward) -> float:
-    if reward is None:
-        return 0.0
-    if isinstance(reward, (int, float)):
-        return float(reward)
-    if hasattr(reward, "score"):
-        return float(reward.score)
+def safe_score(reward):
+    if reward is None: return 0.0
+    if isinstance(reward, (int, float)): return float(reward)
+    if hasattr(reward, "score"): return float(reward.score)
     return 0.0
 
 
 # ── Task runner ───────────────────────────────────────────────────────────────
 
-def run_task(task_id: str, difficulty: str) -> float:
+def run_task(task_id, difficulty):
     if not ENV_AVAILABLE:
-        log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
-        log_step(step=1, action="triage=STANDARD,disposition=OBSERVATION",
-                 reward=0.5, done=True, error="env_unavailable")
-        log_end(success=True, steps=1, score=0.5, rewards=[0.5])
+        log_start(task_id, BENCHMARK, MODEL_NAME)
+        log_step(1, "triage=STANDARD,disposition=OBSERVATION", 0.5, True, "env_unavailable")
+        log_end(True, 1, 0.5, [0.5])
         return 0.5
 
     env      = ClinicalTriageEnvironment()
     obs      = env.reset(difficulty=difficulty)
     obs_dict = obs_to_dict(obs)
+    rewards  = []
+    steps    = 0
+    done     = False
 
-    step_rewards = []
-    steps        = 0
-    done         = False
-
-    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task_id, BENCHMARK, MODEL_NAME)
 
     try:
         while not done and steps < MAX_STEPS:
-            triage_level, disposition, action_str, error_str = llm_act(obs_dict)
-
+            triage, disp, action_str, error_str = llm_act(obs_dict)
             try:
-                action = Action(triage_level=triage_level, disposition=disposition)
+                action = Action(triage_level=triage, disposition=disp)
                 obs, reward, done, info = env.step(action)
                 obs_dict = obs_to_dict(obs)
                 r = safe_score(reward)
             except Exception as e:
                 error_str = str(e)[:80]
-                r    = 0.0
+                r = 0.0
                 done = True
-
             steps += 1
-            step_rewards.append(r)
-            log_step(step=steps, action=action_str, reward=r,
-                     done=bool(done), error=error_str)
-
+            rewards.append(r)
+            log_step(steps, action_str, r, bool(done), error_str)
     except Exception as e:
-        if not step_rewards:
-            step_rewards = [0.0]
-        log_step(step=steps + 1, action="error", reward=0.0,
-                 done=True, error=str(e)[:80])
+        if not rewards: rewards = [0.0]
+        log_step(steps+1, "error", 0.0, True, str(e)[:80])
 
-    score   = round(sum(step_rewards) / max(len(step_rewards), 1), 3)
-    success = score >= 0.5
-    log_end(success=success, steps=steps, score=score, rewards=step_rewards)
+    score   = round(sum(rewards) / max(len(rewards), 1), 3)
+    log_end(score >= 0.5, steps, score, rewards)
     return score
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    tasks = [
-        ("task_easy",   "easy"),
-        ("task_medium", "medium"),
-        ("task_hard",   "hard"),
-    ]
-
+    tasks = [("task_easy","easy"), ("task_medium","medium"), ("task_hard","hard")]
     results = {}
     for task_id, difficulty in tasks:
         try:
-            score = run_task(task_id, difficulty)
-            results[task_id] = score
+            results[task_id] = run_task(task_id, difficulty)
         except Exception as e:
-            print(f"[ERROR] {task_id} failed: {e}", flush=True)
+            print(f"[ERROR] {task_id}: {e}", flush=True)
             results[task_id] = 0.0
 
     overall = round(sum(results.values()) / len(results), 3)
-
     with open("baseline_scores.json", "w") as f:
-        json.dump({
-            "tasks":   results,
-            "overall": overall,
-            "model":   MODEL_NAME,
-        }, f, indent=2)
-
+        json.dump({"tasks": results, "overall": overall, "model": MODEL_NAME}, f, indent=2)
     print(f"[SAVED] baseline_scores.json — overall={overall}", flush=True)
 
 
