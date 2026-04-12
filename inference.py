@@ -13,10 +13,11 @@ import json
 import re
 import sys
 
-# ── Credentials — injected by validator ──────────────────────────────────────
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN") or ""
+# ── Credentials — exactly as required by checklist ───────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+API_KEY      = os.getenv("API_KEY") or HF_TOKEN or ""
 
 BENCHMARK = "clinical-triage"
 MAX_STEPS = 20
@@ -45,11 +46,11 @@ def ensure_packages():
     try:
         import httpx
     except ImportError:
-        os.system(f"{sys.executable} -m pip install httpx --quiet")
+        os.system(f"{sys.executable} -m pip install httpx==0.27.0 --quiet")
     try:
         import openai
     except ImportError:
-        os.system(f"{sys.executable} -m pip install openai --quiet")
+        os.system(f"{sys.executable} -m pip install openai==1.30.1 --quiet")
 
 ensure_packages()
 
@@ -97,10 +98,29 @@ TRIAGE_LEVEL: <IMMEDIATE|URGENT|STANDARD|LOW>
 DISPOSITION: <ICU|GENERAL|OBSERVATION|DISCHARGE>"""
 
 
+# ── Heuristic fallback ────────────────────────────────────────────────────────
+
+def _heuristic(p, h):
+    spo2 = p.get("oxygen_saturation", 95)
+    hr   = p.get("heart_rate", 80)
+    bp   = p.get("blood_pressure", "normal")
+    pain = p.get("pain_level", 0)
+    syms = p.get("symptoms", [])
+    icu  = h.get("icu_beds", 1)
+
+    if spo2 < 90 or hr > 130 or hr < 45 or bp == "very_low" or "severe_bleeding" in syms:
+        return "IMMEDIATE", ("ICU" if icu > 0 else "GENERAL")
+    elif spo2 < 95 or "chest_pain" in syms or pain >= 7:
+        return "URGENT", "GENERAL"
+    elif pain >= 4:
+        return "STANDARD", "OBSERVATION"
+    else:
+        return "LOW", "DISCHARGE"
+
+
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
 def agent_act(obs_dict):
-    """Calls LLM through injected proxy. Falls back to heuristic only if client is None."""
     p = obs_dict.get("patient", {})
     h = obs_dict.get("hospital", {})
 
@@ -129,42 +149,21 @@ Your decision:"""
             for line in raw.split("\n"):
                 if "TRIAGE_LEVEL:" in line:
                     v = line.split(":", 1)[1].strip()
-                    if v in ("IMMEDIATE","URGENT","STANDARD","LOW"):
+                    if v in ("IMMEDIATE", "URGENT", "STANDARD", "LOW"):
                         triage = v
                 if "DISPOSITION:" in line:
                     v = line.split(":", 1)[1].strip()
-                    if v in ("ICU","GENERAL","OBSERVATION","DISCHARGE"):
+                    if v in ("ICU", "GENERAL", "OBSERVATION", "DISCHARGE"):
                         disp = v
             return triage, disp, None
 
         except Exception as e:
             err = clean_error(e)
-            # fall through to heuristic
-            return _heuristic(p, h), None if False else (
-                _heuristic(p, h)[0], _heuristic(p, h)[1], err
-            )
+            t, d = _heuristic(p, h)
+            return t, d, err
 
-    # heuristic fallback when client unavailable
     t, d = _heuristic(p, h)
     return t, d, "client_unavailable"
-
-
-def _heuristic(p, h):
-    spo2 = p.get("oxygen_saturation", 95)
-    hr   = p.get("heart_rate", 80)
-    bp   = p.get("blood_pressure", "normal")
-    pain = p.get("pain_level", 0)
-    syms = p.get("symptoms", [])
-    icu  = h.get("icu_beds", 1)
-
-    if spo2 < 90 or hr > 130 or hr < 45 or bp == "very_low" or "severe_bleeding" in syms:
-        return "IMMEDIATE", ("ICU" if icu > 0 else "GENERAL")
-    elif spo2 < 95 or "chest_pain" in syms or pain >= 7:
-        return "URGENT", "GENERAL"
-    elif pain >= 4:
-        return "STANDARD", "OBSERVATION"
-    else:
-        return "LOW", "DISCHARGE"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
