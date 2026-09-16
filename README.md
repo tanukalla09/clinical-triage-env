@@ -13,169 +13,136 @@ tags:
   - healthcare
 ---
 
-# ClinicalTriage OpenEnv
+# 🏥 ClinicalTriage OpenEnv
 
-**Built by VisionVerse** for the Meta × PyTorch × Hugging Face OpenEnv Hackathon 2026
+**An emergency-room triage simulation environment for reinforcement learning agents.**
+Built solo by **Tanushree Kalla**, submitted under team **VisionVerse**, for the **Meta × PyTorch × Hugging Face OpenEnv Hackathon 2026**.
 
-> ⚠️ Synthetic simulation only. All patient data is procedurally generated. Not for real medical use.
+> ⚠️ **Synthetic simulation only.** All patient data is procedurally generated. Not for real medical use, diagnosis, or triage assistance.
+
+**Live demo:** https://tanukalla09-clinical-triage-env.hf.space
+**Repo:** [`tanukalla09/clinical-triage-env`](https://github.com/tanukalla09/clinical-triage-env)
 
 ---
 
-## Repository Contents
+## What This Is
+
+An RL agent plays the role of a triage nurse in an ER. For each patient it sees two things — symptoms and vitals — and must make two decisions: how severe is this patient (`triage_level`), and where should they go (`disposition`). Get it right and you score well; misjudge a critical patient as low-priority and you take a heavy safety penalty, the way a real triage mistake would carry real consequences.
+
+It's built as a fully offline, self-contained **FastAPI** service that speaks the OpenEnv `reset` / `step` / `grade` contract, packaged for Hugging Face Spaces via Docker.
+
+**Why it's a non-trivial RL problem:**
+- Classify severity under incomplete information and time pressure
+- Allocate genuinely scarce resources — as few as 1 ICU bed for 12 patients in hard mode
+- Safety-critical failure modes — missing a cardiac arrest is the worst possible mistake, and the reward function reflects that asymmetry
+- Balance 4–12 patients per episode with competing priorities
+- Every decision produces a shaped, per-step reward — not one sparse signal at the end
+
+---
+
+## Architecture
 
 ```
 clinical-triage-env/
-├── environment.py       ← Core OpenEnv environment (offline, no external APIs)
-├── app.py               ← FastAPI server wrapping the environment
-├── inference.py         ← Baseline demo script (optional local evaluation)
-├── Dockerfile           ← Container definition for HF Spaces
-├── requirements.txt     ← Python dependencies
-├── openenv.yaml         ← OpenEnv metadata and spec
-├── README.md            ← This file
-└── static/
-    └── index.html       ← Landing page
+├── environment.py      ← Core simulation: patient generator, oracle classifier, reward logic
+├── app.py               ← FastAPI app — wraps environment.py in the OpenEnv HTTP contract
+├── server/app.py         ← Thin alternate entrypoint (imports app.py, runs uvicorn directly)
+├── inference.py          ← Optional: runs a remote LLM against the live environment
+├── static/index.html     ← Landing page served at "/"
+├── openenv.yaml           ← Machine-readable spec: tasks, action/observation space, reward structure
+├── Dockerfile             ← Container build for HF Spaces (python:3.11-slim, port 7860)
+├── requirements.txt       ← Runtime dependencies
+└── pyproject.toml         ← Package metadata
 ```
 
-**Live demo:** https://tanukalla09-clinical-triage-env.hf.space
-
----
-
-## Project Overview
-
-ClinicalTriage OpenEnv is an emergency room triage simulation where an RL agent learns to act as a triage nurse — classifying patient severity, allocating scarce hospital resources, and making safety-critical decisions under pressure.
-
-**Why this is a hard RL problem:**
-- Classify severity under time pressure with incomplete information
-- Allocate scarce resources — only 1 ICU bed may be available in hard mode
-- Avoid safety-critical mistakes — missing a cardiac arrest is catastrophic
-- Balance competing priorities across 4–12 patients per episode
-- Reward signal varies meaningfully across every decision
-
----
-
-## Team
-
-**VisionVerse** — OpenEnv Hackathon 2026
-
-### Team Setup Notes
-- Each team member registers individually on the platform
-- Only the Team Lead creates and submits the team form
-- Team confirmation is final — cannot be changed after confirming
-- Only the latest submission before the deadline is evaluated
+The environment logic (`environment.py`) has zero external dependencies — no network calls, no database — so it runs identically locally, in Docker, and on HF Spaces. `inference.py` is the only piece that talks to an external API, and only if you choose to run it.
 
 ---
 
 ## Environment Design
 
-### The agent makes two decisions per patient
+### Two decisions per patient
 
-**Decision 1 — Triage Level** (how severe is this patient?)
+**1. Triage level** — how severe is this patient?
 
-| Level | Meaning | Clinical Signal |
+| Level | Meaning | Example signal |
 |---|---|---|
-| `IMMEDIATE` | Life-threatening — act right now | SpO2 < 88%, HR > 150, severe bleeding |
-| `URGENT` | Serious — within 30 minutes | SpO2 < 95% + dyspnea, cardiac history |
-| `STANDARD` | Stable — within 2 hours | Temp > 38.5, moderate pain |
-| `LOW` | Minor — can wait | Normal vitals, minor symptoms |
+| `IMMEDIATE` | Life-threatening — act now | SpO2 < 88%, HR > 150, chest pain + SpO2 < 92% |
+| `URGENT` | Serious — within 30 min | SpO2 < 95% + shortness of breath, cardiac history |
+| `STANDARD` | Stable — within 2 hrs | Temp > 38.5°C, moderate pain |
+| `LOW` | Minor — can wait | Normal vitals, mild symptoms |
 
-**Decision 2 — Disposition** (where does this patient go?)
+**2. Disposition** — where does this patient go?
 
-| Disposition | Meaning | Paired with |
-|---|---|---|
-| `ICU` | Intensive care unit | IMMEDIATE |
-| `GENERAL` | General ward admission | URGENT |
-| `OBSERVATION` | Monitor and reassess | STANDARD |
-| `DISCHARGE` | Safe to send home | LOW |
+| Disposition | Paired with |
+|---|---|
+| `ICU` | IMMEDIATE |
+| `GENERAL` | URGENT |
+| `OBSERVATION` | STANDARD |
+| `DISCHARGE` | LOW |
 
----
+### Ground truth: `classify_severity()`
 
-## Tasks
+A deterministic, rule-based function in `environment.py` maps a patient's vitals/symptoms to the *correct* `(triage_level, disposition)` pair — e.g. `chest_pain + SpO2 < 92` → `IMMEDIATE/ICU`, `temp > 38.5` → `STANDARD/OBSERVATION`, and so on down a fixed priority list ending in `LOW/DISCHARGE`. This same function is used both to grade an agent's decisions **and** as the built-in "oracle" policy (see Baseline Scores below).
 
-| Task | Difficulty | Patients | ICU Beds | Doctors | Key Challenge |
+### Tasks
+
+| Task | Difficulty | Patients | ICU Beds | Doctors | Key challenge |
 |---|---|---|---|---|---|
-| Single Patient Triage | Easy | 4 | 5 | 4 | Learn basic severity from clear signals |
-| Mixed Severity ER | Medium | 8 | 3 | 2 | Balance accuracy with resource constraints |
-| Mass Casualty Event | Hard | 12 | 1 | 1 | Subtle signals + extreme scarcity + safety stakes |
+| Single Patient Triage | Easy | 4 | 5 | 4 | Clear signals, ample resources |
+| Mixed Severity ER | Medium | 8 | 3 | 2 | Balance accuracy with moderate scarcity |
+| Mass Casualty Event | Hard | 12 | 1 | 1 | Subtle signals + extreme scarcity |
 
 ---
 
 ## Reward Function
 
-Reward is computed **per patient** (per-step, not sparse end-of-episode):
+Computed **per patient, per step** (shaped, not sparse), then clipped to `[0.0, 1.0]`:
 
 | Component | Score | Condition |
 |---|---|---|
-| Triage level — exact match | +0.50 | Agent level == correct level |
-| Triage level — off by one | +0.25 | e.g. URGENT when correct is IMMEDIATE |
-| Triage level — off by 2+ | 0.00 | Badly wrong |
-| Disposition — exact match | +0.30 | Agent disposition == correct disposition |
-| Disposition — partial | +0.10–0.15 | Related but wrong |
-| Safety penalty — IMMEDIATE→LOW/STANDARD | **−0.50** | Life-threatening miss |
-| Safety penalty — IMMEDIATE→URGENT | −0.10 | Close but risky |
-| Safety penalty — URGENT→LOW | −0.25 | Dangerous delay |
-| Resource penalty — ICU when 0 beds | −0.15 | Overuse of scarce ICU |
-| Time bonus — critical seen fast | +0.10 | IMMEDIATE, waiting < 5 min, correct |
+| Triage level — exact match | +0.50 | |
+| Triage level — off by one | +0.25 | e.g. `URGENT` when correct is `IMMEDIATE` |
+| Triage level — off by 2+ | 0.00 | |
+| Disposition — exact match | +0.30 | |
+| Disposition — ICU/GENERAL mix-up | +0.10 | |
+| Disposition — other partial match | +0.15 | |
+| Disposition — DISCHARGE when care was needed | 0.00 | |
+| Safety penalty — IMMEDIATE → STANDARD/LOW | **−0.50** | Life-threatening miss |
+| Safety penalty — IMMEDIATE → URGENT | −0.10 | Close but risky |
+| Safety penalty — URGENT → LOW | −0.25 | Dangerous delay |
+| Resource penalty — ICU requested, 0 beds left | −0.15 | |
+| Resource penalty — GENERAL/OBSERVATION requested, 0 beds left | −0.10 | |
+| Time bonus — IMMEDIATE, seen in < 5 min, correct | +0.10 | |
 
-**Final score = clip(sum, 0.0, 1.0)**
-
-### Off-by-one level calculation
-
-Levels are ordered: IMMEDIATE(4) > URGENT(3) > STANDARD(2) > LOW(1)
-
-`diff = abs(agent_rank - true_rank)`
-- diff == 0 → +0.50
-- diff == 1 → +0.25
-- diff >= 2 → 0.00
+Level ordering for the "off-by-N" calculation: `IMMEDIATE(4) > URGENT(3) > STANDARD(2) > LOW(1)`, `diff = abs(agent_rank − true_rank)`.
 
 ---
 
-## Observation Space
+## Observation & Action Space
 
+**Observation** (what the agent sees each step):
 ```json
 {
   "patient": {
-    "patient_id": "P003",
-    "age": 72,
+    "patient_id": "P003", "age": 72,
     "symptoms": ["chest_pain", "shortness_of_breath"],
-    "oxygen_saturation": 88,
-    "heart_rate": 142,
-    "blood_pressure": "low",
-    "temperature": 37.2,
-    "pain_level": 8,
-    "risk_factors": ["cardiac_history", "diabetes"],
+    "oxygen_saturation": 88, "heart_rate": 142,
+    "blood_pressure": "low", "temperature": 37.2,
+    "pain_level": 8, "risk_factors": ["cardiac_history", "diabetes"],
     "waiting_time_min": 3
   },
-  "hospital": {
-    "icu_beds": 2,
-    "general_beds": 8,
-    "doctors": 2,
-    "nurses": 5
-  },
-  "queue_length": 5,
-  "step_num": 3,
-  "total_patients": 8,
-  "patients_handled": 3,
-  "episode_done": false
+  "hospital": { "icu_beds": 2, "general_beds": 8, "doctors": 2, "nurses": 5 },
+  "queue_length": 5, "step_num": 3, "total_patients": 8,
+  "patients_handled": 3, "episode_done": false
 }
 ```
 
----
-
-## Action Space
-
-The agent submits two fields per step:
-
+**Action** (what the agent submits):
 ```json
-{
-  "triage_level": "IMMEDIATE",
-  "disposition": "ICU"
-}
+{ "triage_level": "IMMEDIATE", "disposition": "ICU" }
 ```
-
-- `triage_level`: one of `IMMEDIATE`, `URGENT`, `STANDARD`, `LOW`
-- `disposition`: one of `ICU`, `GENERAL`, `OBSERVATION`, `DISCHARGE`
-
-Invalid values are rejected automatically by Pydantic (422 error).
+Invalid enum values are rejected automatically with a `422` (Pydantic validation).
 
 ---
 
@@ -183,60 +150,53 @@ Invalid values are rejected automatically by Pydantic (422 error).
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/health` | Health check — returns 200 + status ok |
-| POST | `/reset` | Start new episode, returns first observation |
-| POST | `/step` | Submit triage decision, get reward |
-| GET | `/state` | Complete environment state |
+| GET | `/health` | Health check |
+| POST | `/reset` | Start a new episode — body: `{"difficulty": "easy\|medium\|hard"}` |
+| POST | `/step` | Submit a decision, get the reward + next observation |
+| GET | `/state` | Full current environment state |
 | GET | `/tasks` | All 3 tasks with full descriptions |
-| POST | `/grade/{task_id}` | Oracle grader — returns score 0.0–1.0 |
+| POST | `/grade/{task_id}` | Runs 5 episodes with the built-in oracle policy, returns scores |
 
-### /grade/{task_id} details
+### Verified edge-case behavior
 
-- **No request body required**
-- Runs 5 episodes using oracle (classify_severity) policy
-- Returns average score + individual episode scores
+Tested directly against a running instance — all behave exactly as intended:
 
-Example response:
-```json
-{
-  "task_id": "task_easy",
-  "episodes_run": 5,
-  "average_score": 0.825,
-  "scores": [0.8, 0.825, 0.825, 0.85, 0.825],
-  "grader": "oracle (classify_severity ground truth)",
-  "score_range": "0.0–1.0"
-}
-```
-
----
-
-## Edge Case Handling
-
-| Situation | Behaviour |
+| Situation | Behavior |
 |---|---|
-| Invalid triage_level or disposition | 422 — rejected by Pydantic |
-| step() before reset() | 400 — "Not initialised. Call reset() first." |
-| step() after done=True | 400 — "Episode finished. Call reset() to start a new one." |
+| `/step` called before `/reset` | `400` — "Not initialised. Call reset() first." |
+| Invalid `triage_level`/`disposition` | `422` — Pydantic schema error, names the allowed values |
+| `/step` after episode is done | `400` — "Episode finished. Call reset() to start a new one." |
 | ICU beds exhausted | Resource penalty applied, no crash |
-| Missing fields in request | 422 — FastAPI schema validation |
 
 ---
 
-## How Round 1 Evaluation Works
+## Baseline (Oracle) Scores — Measured
 
-Round 1 evaluates submissions across these dimensions:
+`/grade/{task_id}` runs an oracle policy that calls the same `classify_severity()` function used for grading, so it always classifies patients correctly by construction. Because the base score for a correct classification (`0.50 + 0.30 = 0.80`) is fixed, the oracle's score moves only with **resource penalties** and the **time bonus** — not with how "hard" the task nominally is. Running the grader repeatedly gives consistent results:
 
-| Criterion | Weight | What judges check |
+| Task | Measured average score | Notes |
 |---|---|---|
-| Real-world utility | 30% | Is this a genuine task? Real RL value? |
-| Task & grader quality | 25% | 3+ tasks? Scores vary? Hard task is hard? |
-| Environment design | 20% | Clean state? Good reward shaping? |
-| Code quality & spec compliance | 15% | OpenEnv spec, Docker, HF Space, baseline |
-| Creativity & novelty | 10% | Original domain? Interesting mechanics? |
+| task_easy | ~0.81–0.82 | Plenty of beds → frequent time bonus, rare penalties |
+| task_medium | ~0.78–0.80 | Some resource contention |
+| task_hard | ~0.74–0.75 | Extreme scarcity causes more resource penalties, pulling the score down — but only modestly |
 
-**Phase 1** (automated): HF Space deploys, endpoints respond, Dockerfile builds, graders work
-**Phase 2** (agentic): LLM agent runs against all 3 tasks, scores are evaluated
-**Phase 3** (human): Meta and HF engineers review top submissions
+**Known limitation:** because the oracle can't be "wrong" about classification, the difficulty gap between tasks is much narrower than it would be for a learning agent (which *can* misclassify). A real LLM or RL agent evaluated on these tasks would be expected to show a much larger easy→hard gap than the oracle does, since only the oracle enjoys a guaranteed-correct classification floor.
+
+---
+
+## How Hackathon Evaluation Works
+
+| Criterion | Weight | What's checked |
+|---|---|---|
+| Real-world utility | 30% | Is this a genuine, useful RL task? |
+| Task & grader quality | 25% | 3+ tasks, scores vary meaningfully, hard task is actually hard |
+| Environment design | 20% | Clean state management, good reward shaping |
+| Code quality & spec compliance | 15% | OpenEnv spec, Docker, HF Space, baseline script |
+| Creativity & novelty | 10% | Original domain, interesting mechanics |
+
+**Phase 1** (automated) — HF Space deploys, endpoints respond, Dockerfile builds, graders run
+**Phase 2** (agentic) — an LLM agent plays all 3 tasks, scores are evaluated
+**Phase 3** (human) — Meta/Hugging Face engineers review top submissions
 
 ---
 
@@ -249,10 +209,8 @@ pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 7860
 ```
 
-Open **http://localhost:7860** for the landing page.
-Open **http://localhost:7860/docs** for interactive API docs.
-
----
+- Landing page: `http://localhost:7860`
+- Interactive API docs (Swagger): `http://localhost:7860/docs`
 
 ## Docker
 
@@ -261,74 +219,42 @@ docker build -t clinical-triage-env .
 docker run -p 7860:7860 clinical-triage-env
 ```
 
----
-
-## Example API Usage
+## Example Requests
 
 ```bash
-# Health check
 curl https://tanukalla09-clinical-triage-env.hf.space/health
 
-# Start episode
 curl -X POST https://tanukalla09-clinical-triage-env.hf.space/reset \
-  -H "Content-Type: application/json" \
-  -d '{"difficulty": "easy"}'
+  -H "Content-Type: application/json" -d '{"difficulty": "easy"}'
 
-# Submit decision
 curl -X POST https://tanukalla09-clinical-triage-env.hf.space/step \
   -H "Content-Type: application/json" \
   -d '{"triage_level": "IMMEDIATE", "disposition": "ICU"}'
 
-# Run grader
 curl -X POST https://tanukalla09-clinical-triage-env.hf.space/grade/task_easy
 ```
 
----
+## Optional: Local LLM Evaluation
 
-## Optional Local Evaluation Script
-
-`inference.py` is an optional demo script that runs a language model against the environment locally. It is **not required** for the environment to function — the core environment runs fully offline with no external APIs.
-
-To run it locally with a remote model:
+`inference.py` runs a remote language model against the live environment — entirely optional, the environment itself needs no external API.
 
 ```bash
-# Windows
-set API_BASE_URL=https://api-inference.huggingface.co/v1
-set MODEL_NAME=mistralai/Mistral-7B-Instruct-v0.3
-set HF_TOKEN=your_hf_token_here
-python inference.py
-
-# Mac/Linux
 export API_BASE_URL=https://api-inference.huggingface.co/v1
 export MODEL_NAME=mistralai/Mistral-7B-Instruct-v0.3
 export HF_TOKEN=your_hf_token_here
 python inference.py
 ```
 
-The script emits structured JSON logs in `[START]`, `[STEP]`, `[END]` format and saves `baseline_scores.json`.
-
-**Note:** `HF_TOKEN` is only needed if calling a remote LLM endpoint. The environment itself runs fully offline.
-
----
-
-## Baseline Scores
-
-Produced by a deterministic heuristic policy (`classify_severity` oracle) that maps patient vitals directly to the correct triage level and disposition using clinical rules:
-
-| Task | Approximate Score | Policy |
-|---|---|---|
-| task_easy | ~0.81–0.83 | Oracle (classify_severity) |
-| task_medium | ~0.63–0.67 | Oracle (classify_severity) |
-| task_hard | ~0.53–0.57 | Oracle (classify_severity) |
-
-> Scores may vary slightly between runs due to random patient generation. For exact reproducibility, set a fixed random seed before running.
+Emits structured `[START]` / `[STEP]` / `[END]` logs and saves `baseline_scores.json`.
 
 ---
 
 ## Synthetic Data Notice
 
-All patient data in this environment is procedurally generated using randomised templates and rules. No real patient data is used. This environment is not intended for clinical use, medical decision support, or real triage assistance. It is a synthetic simulation for AI research and RL benchmarking purposes only.
+All patient data is procedurally generated from randomized templates and rules. No real patient data is used anywhere in this project. This environment is for AI research and RL benchmarking only — not for clinical use, medical decision support, or real triage.
 
 ---
 
-*ClinicalTriage OpenEnv — VisionVerse — Meta × PyTorch × Hugging Face OpenEnv Hackathon 2026*
+## Credits
+
+Built by **[Tanushree Kalla](https://github.com/tanukalla09)**, solo, under team **VisionVerse**, for the **Meta × PyTorch × Hugging Face OpenEnv Hackathon 2026**.
